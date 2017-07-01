@@ -40,23 +40,41 @@ func (d *fakeDialer) Dial(protocols ...string) (httpstream.Connection, string, e
 
 func TestParsePortsAndNew(t *testing.T) {
 	tests := []struct {
-		input            []string
-		expected         []ForwardedPort
-		expectParseError bool
-		expectNewError   bool
+		input                   []string
+		addresses               []string
+		expectedPorts           []ForwardedPort
+		expectedAddresses       []listenAddress
+		expectPortParseError    bool
+		expectAddressParseError bool
+		expectNewError          bool
 	}{
 		{input: []string{}, expectNewError: true},
-		{input: []string{"a"}, expectParseError: true, expectNewError: true},
-		{input: []string{":a"}, expectParseError: true, expectNewError: true},
-		{input: []string{"-1"}, expectParseError: true, expectNewError: true},
-		{input: []string{"65536"}, expectParseError: true, expectNewError: true},
-		{input: []string{"0"}, expectParseError: true, expectNewError: true},
-		{input: []string{"0:0"}, expectParseError: true, expectNewError: true},
-		{input: []string{"a:5000"}, expectParseError: true, expectNewError: true},
-		{input: []string{"5000:a"}, expectParseError: true, expectNewError: true},
+		{input: []string{"a"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{":a"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"-1"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"65536"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"0"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"0:0"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"a:5000"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"5000:a"}, expectPortParseError: true, expectAddressParseError: false, expectNewError: true},
+		{input: []string{"5000:5000"}, addresses: []string{"127.0.0.257"}, expectPortParseError: false, expectAddressParseError: true, expectNewError: true},
+		{input: []string{"5000:5000"}, addresses: []string{"::g"}, expectPortParseError: false, expectAddressParseError: true, expectNewError: true},
+		{input: []string{"5000:5000"}, addresses: []string{"domain.invalid"}, expectPortParseError: false, expectAddressParseError: true, expectNewError: true},
 		{
-			input: []string{"5000", "5000:5000", "8888:5000", "5000:8888", ":5000", "0:5000"},
-			expected: []ForwardedPort{
+			input:     []string{"5000:5000"},
+			addresses: []string{"localhost", "127.0.0.1"},
+			expectedPorts: []ForwardedPort{
+				{5000, 5000},
+			},
+			expectedAddresses: []listenAddress{
+				{protocol: "tcp4", address: "127.0.0.1"},
+				{protocol: "tcp6", address: "::1"},
+			},
+		},
+		{
+			input:     []string{"5000", "5000:5000", "8888:5000", "5000:8888", ":5000", "0:5000"},
+			addresses: []string{"127.0.0.1", "::1"},
+			expectedPorts: []ForwardedPort{
 				{5000, 5000},
 				{5000, 5000},
 				{8888, 5000},
@@ -64,34 +82,60 @@ func TestParsePortsAndNew(t *testing.T) {
 				{0, 5000},
 				{0, 5000},
 			},
+			expectedAddresses: []listenAddress{
+				{protocol: "tcp4", address: "127.0.0.1"},
+				{protocol: "tcp6", address: "::1"},
+			},
 		},
 	}
 
 	for i, test := range tests {
-		parsed, err := parsePorts(test.input)
+		parsedPorts, err := parsePorts(test.input)
 		haveError := err != nil
-		if e, a := test.expectParseError, haveError; e != a {
+		if e, a := test.expectPortParseError, haveError; e != a {
 			t.Fatalf("%d: parsePorts: error expected=%t, got %t: %s", i, e, a, err)
+		}
+
+		// default to localhost
+		if len(test.addresses) == 0 && len(test.expectedAddresses) == 0 {
+			test.addresses = []string{"localhost"}
+			test.expectedAddresses = []listenAddress{{protocol: "tcp4", address: "127.0.0.1"}, {protocol: "tcp6", address: "::1"}}
+		}
+		// assert address parser
+		parsedAddresses, err := parseAddresses(test.addresses)
+		haveError = err != nil
+		if e, a := test.expectAddressParseError, haveError; e != a {
+			t.Fatalf("%d: parseAddresses: error expected=%t, got %t: %s", i, e, a, err)
 		}
 
 		dialer := &fakeDialer{}
 		expectedStopChan := make(chan struct{})
 		readyChan := make(chan struct{})
-		pf, err := New(dialer, test.input, expectedStopChan, readyChan, os.Stdout, os.Stderr)
+
+		var pf *PortForwarder
+		if len(test.addresses) > 0 {
+			pf, err = NewOnAddresses(dialer, test.addresses, test.input, expectedStopChan, readyChan, os.Stdout, os.Stderr)
+		} else {
+			pf, err = New(dialer, test.input, expectedStopChan, readyChan, os.Stdout, os.Stderr)
+		}
 		haveError = err != nil
 		if e, a := test.expectNewError, haveError; e != a {
 			t.Fatalf("%d: New: error expected=%t, got %t: %s", i, e, a, err)
 		}
 
-		if test.expectParseError || test.expectNewError {
+		if test.expectPortParseError || test.expectAddressParseError || test.expectNewError {
 			continue
 		}
 
-		for pi, expectedPort := range test.expected {
-			if e, a := expectedPort.Local, parsed[pi].Local; e != a {
+		if !reflect.DeepEqual(test.expectedAddresses, parsedAddresses) {
+			t.Fatalf("%d: expectedAddresses: %v, got: %v", i, test.expectedAddresses, parsedAddresses)
+		}
+
+		for pi, expectedPort := range test.expectedPorts {
+			if e, a := expectedPort.Local, parsedPorts[pi].Local; e != a {
 				t.Fatalf("%d: local expected: %d, got: %d", i, e, a)
 			}
-			if e, a := expectedPort.Remote, parsed[pi].Remote; e != a {
+			if e, a := expectedPort.Remote, parsedPorts[pi].Remote; e != a {
 				t.Fatalf("%d: remote expected: %d, got: %d", i, e, a)
 			}
 		}
@@ -99,7 +143,7 @@ func TestParsePortsAndNew(t *testing.T) {
 		if dialer.dialed {
 			t.Fatalf("%d: expected not dialed", i)
 		}
-		if e, a := test.expected, pf.ports; !reflect.DeepEqual(e, a) {
+		if e, a := test.expectedPorts, pf.ports; !reflect.DeepEqual(e, a) {
 			t.Fatalf("%d: ports: expected %#v, got %#v", i, e, a)
 		}
 		if e, a := expectedStopChan, pf.stopChan; e != a {

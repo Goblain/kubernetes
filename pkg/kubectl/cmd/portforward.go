@@ -48,6 +48,7 @@ type PortForwardOptions struct {
 	RESTClient    *restclient.RESTClient
 	Config        *restclient.Config
 	PodClient     coreclient.PodsGetter
+	Address       []string
 	Ports         []string
 	PortForwarder portForwarder
 	StopChannel   chan struct{}
@@ -74,6 +75,12 @@ var (
 		# Listen on port 8888 locally, forwarding to 5000 in the pod
 		kubectl port-forward pod/mypod 8888:5000
 
+		# Listen on port 8888 on all addresses, forwarding to 5000 in the pod
+		kubectl port-forward --address 0.0.0.0 pod/mypod 8888:5000
+
+		# Listen on port 8888 on localhost and selected IP, forwarding to 5000 in the pod
+		kubectl port-forward --address localhost,10.19.21.23,example.com pod/mypod 8888:5000
+
 		# Listen on a random port locally, forwarding to 5000 in the pod
 		kubectl port-forward pod/mypod :5000`))
 )
@@ -91,7 +98,7 @@ func NewCmdPortForward(f cmdutil.Factory, cmdOut, cmdErr io.Writer) *cobra.Comma
 		},
 	}
 	cmd := &cobra.Command{
-		Use: "port-forward TYPE/NAME [LOCAL_PORT:]REMOTE_PORT [...[LOCAL_PORT_N:]REMOTE_PORT_N]",
+		Use: "port-forward TYPE/NAME [options] [LOCAL_PORT:]REMOTE_PORT [...[LOCAL_PORT_N:]REMOTE_PORT_N]",
 		DisableFlagsInUseLine: true,
 		Short:   i18n.T("Forward one or more local ports to a pod"),
 		Long:    portforwardLong,
@@ -109,6 +116,7 @@ func NewCmdPortForward(f cmdutil.Factory, cmdOut, cmdErr io.Writer) *cobra.Comma
 		},
 	}
 	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodPortForwardWaitTimeout)
+	cmdutil.AddAddressFlag(cmd)
 	// TODO support UID
 	return cmd
 }
@@ -127,7 +135,7 @@ func (f *defaultPortForwarder) ForwardPorts(method string, url *url.URL, opts Po
 		return err
 	}
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, method, url)
-	fw, err := portforward.New(dialer, opts.Ports, opts.StopChannel, opts.ReadyChannel, f.cmdOut, f.cmdErr)
+	fw, err := portforward.NewOnAddresses(dialer, opts.Address, opts.Ports, opts.StopChannel, opts.ReadyChannel, f.cmdOut, f.cmdErr)
 	if err != nil {
 		return err
 	}
@@ -228,6 +236,8 @@ func (o *PortForwardOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	if err != nil {
 		return err
 	}
+
+	o.Address = cmdutil.GetAddressFlag(cmd)
 
 	o.StopChannel = make(chan struct{}, 1)
 	o.ReadyChannel = make(chan struct{})
