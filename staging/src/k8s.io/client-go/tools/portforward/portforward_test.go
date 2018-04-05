@@ -127,6 +127,11 @@ func TestParsePortsAndNew(t *testing.T) {
 			continue
 		}
 
+		// wipe group pointers before matching against it
+		for k := range parsedAddresses {
+			parsedAddresses[k].group = nil
+		}
+
 		if !reflect.DeepEqual(test.expectedAddresses, parsedAddresses) {
 			t.Fatalf("%d: expectedAddresses: %v, got: %v", i, test.expectedAddresses, parsedAddresses)
 		}

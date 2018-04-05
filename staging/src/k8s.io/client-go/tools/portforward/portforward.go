@@ -36,6 +36,14 @@ import (
 // The subprotocol "portforward.k8s.io" is used for port forwarding.
 const PortForwardProtocolV1Name = "portforward.k8s.io"
 
+var (
+	listenAddressGroupFailureModeAll = listenAddressGroupFailureMode{Mode: "all"}
+	listenAddressGroupFailureModeAny = listenAddressGroupFailureMode{Mode: "any"}
+	listenAddressGroupDefault        = listenAddressGroup{failureMode: listenAddressGroupFailureModeAny, failCount: 0, successCount: 0}
+	listenAddressGroupLocal          = listenAddressGroup{failureMode: listenAddressGroupFailureModeAll, failCount: 0, successCount: 0}
+	listenAddressGroups              = []*listenAddressGroup{&listenAddressGroupDefault, &listenAddressGroupLocal}
+)
+
 // PortForwarder knows how to listen for local connections and forward them to
 // a remote pod via an upgraded HTTP request.
 type PortForwarder struct {
@@ -111,60 +119,54 @@ func parsePorts(ports []string) ([]ForwardedPort, error) {
 	return forwards, nil
 }
 
+type listenAddressGroupFailureMode struct {
+	Mode string
+}
+
+type listenAddressGroup struct {
+	failureMode  listenAddressGroupFailureMode
+	failCount    int
+	successCount int
+}
+
 type listenAddress struct {
 	address  string
 	protocol string
+	group    *listenAddressGroup
 }
 
 func parseAddresses(addressesToParse []string) ([]listenAddress, error) {
 	var addresses []listenAddress
-	var al []string
-	// replace non IP entries with their resolved addresses or remove completely
-	// "localhost" will get replaced with 127.0.0.1 and ::1
-	for _, addr := range addressesToParse {
-		if addr == "localhost" {
-			al = append(al, "127.0.0.1")
-			al = append(al, "::1")
-		} else if net.ParseIP(addr) != nil {
-			al = append(al, addr)
+	parsed := make(map[string]listenAddress)
+	for _, address := range addressesToParse {
+		if address == "localhost" {
+			ip := listenAddress{address: "127.0.0.1", protocol: "tcp4", group: &listenAddressGroupLocal}
+			parsed[ip.address] = ip
+			ip = listenAddress{address: "::1", protocol: "tcp6", group: &listenAddressGroupLocal}
+			parsed[ip.address] = ip
+		} else if net.ParseIP(address).To4() != nil {
+			parsed[address] = listenAddress{address: address, protocol: "tcp4", group: &listenAddressGroupDefault}
+		} else if net.ParseIP(address) != nil {
+			parsed[address] = listenAddress{address: address, protocol: "tcp6", group: &listenAddressGroupDefault}
 		} else {
-			var hosts []string
-			hosts, err := net.LookupHost(addr)
-			if err != nil {
-				return nil, fmt.Errorf("%s can not be parsed into valid listen address", addr)
-			}
-			al = append(al, hosts...)
+			return nil, fmt.Errorf("%s is not a valid IP", address)
 		}
 	}
-	addressesToParse = al
-	// assemble and return []listenAddress to listen on
-	for _, address := range addressesToParse {
-		var parsed listenAddress
-		var found bool
-		if net.ParseIP(address).To4() != nil {
-			parsed = listenAddress{address: address, protocol: "tcp4"}
-		} else if net.ParseIP(address) != nil {
-			parsed = listenAddress{address: address, protocol: "tcp6"}
-		}
-		// append only unique entries
-		found = false
-		for _, a := range addresses {
-			if a.address == parsed.address && a.protocol == parsed.protocol {
-				found = true
-			}
-		}
-		if found != true {
-			addresses = append(addresses, parsed)
-		}
+	addresses = make([]listenAddress, len(parsed))
+	id := 0
+	for _, v := range parsed {
+		addresses[id] = v
+		id++
 	}
 	return addresses, nil
 }
 
-// New creates a new PortForwarder.
+// New creates a new PortForwarder with localhost listen addresses.
 func New(dialer httpstream.Dialer, ports []string, stopChan <-chan struct{}, readyChan chan struct{}, out, errOut io.Writer) (*PortForwarder, error) {
 	return NewOnAddresses(dialer, []string{"localhost"}, ports, stopChan, readyChan, out, errOut)
 }
 
+// NewOnAddresses creates a new PortForwarder with custom listen addresses.
 func NewOnAddresses(dialer httpstream.Dialer, addresses []string, ports []string, stopChan <-chan struct{}, readyChan chan struct{}, out, errOut io.Writer) (*PortForwarder, error) {
 	if len(addresses) == 0 {
 		return nil, errors.New("You must specify at least 1 address")
@@ -243,21 +245,29 @@ func (pf *PortForwarder) forward() error {
 	return nil
 }
 
-// listenOnPort delegates tcp4 and tcp6 listener creation and waits for connections on both of these addresses.
-// If both listener creation fail, an error is raised.
+// listenOnPort delegates listener creation and waits for connections on requested bind addresses.
+// An error is raised based on address groups (default and localhost) and their failure modes
 func (pf *PortForwarder) listenOnPort(port *ForwardedPort) error {
-	var listenSuccessfull bool
 	var errors []error
+	for k := range listenAddressGroups {
+		listenAddressGroups[k].failCount = 0
+		listenAddressGroups[k].successCount = 0
+	}
 	for _, addr := range pf.addresses {
 		err := pf.listenOnPortAndAddress(port, addr.protocol, addr.address)
 		if err != nil {
 			errors = append(errors, err)
+			addr.group.failCount++
 		} else {
-			listenSuccessfull = true
+			addr.group.successCount++
 		}
 	}
-	if listenSuccessfull != true {
-		return fmt.Errorf("%s: %v", "All listeners failed to create with the following errors", errors)
+	for _, g := range listenAddressGroups {
+		if g.failureMode == listenAddressGroupFailureModeAll && g.successCount == 0 && g.failCount > 0 {
+			return fmt.Errorf("%s: %v", "Listeners failed to create with the following errors", errors)
+		} else if g.failureMode == listenAddressGroupFailureModeAny && g.failCount > 0 {
+			return fmt.Errorf("%s: %v", "Listeners failed to create with the following errors", errors)
+		}
 	}
 	return nil
 }

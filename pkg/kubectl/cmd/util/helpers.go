@@ -389,10 +389,6 @@ func GetPodRunningTimeoutFlag(cmd *cobra.Command) (time.Duration, error) {
 	return timeout, nil
 }
 
-func GetAddressFlag(cmd *cobra.Command) []string {
-	return GetFlagStringSlice(cmd, "address")
-}
-
 func AddValidateFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("validate", true, "If true, use a schema to validate the input before sending it")
 }
@@ -432,10 +428,6 @@ func AddApplyAnnotationVarFlags(cmd *cobra.Command, applyAnnotation *bool) {
 func AddGeneratorFlags(cmd *cobra.Command, defaultGenerator string) {
 	cmd.Flags().String("generator", defaultGenerator, "The name of the API generator to use.")
 	AddDryRunFlag(cmd)
-}
-
-func AddAddressFlag(cmd *cobra.Command) {
-	cmd.Flags().StringSlice("address", []string{"localhost"}, "Addresses to listen on (comma separated)")
 }
 
 type ValidateOptions struct {

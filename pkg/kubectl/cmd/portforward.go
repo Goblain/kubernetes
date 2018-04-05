@@ -80,7 +80,7 @@ var (
 		kubectl port-forward --address 0.0.0.0 pod/mypod 8888:5000
 
 		# Listen on port 8888 on localhost and selected IP, forwarding to 5000 in the pod
-		kubectl port-forward --address localhost,10.19.21.23,example.com pod/mypod 8888:5000
+		kubectl port-forward --address localhost,10.19.21.23 pod/mypod 8888:5000
 
 		# Listen on a random port locally, forwarding to 5000 in the pod
 		kubectl port-forward pod/mypod :5000`))
@@ -116,7 +116,7 @@ func NewCmdPortForward(f cmdutil.Factory, streams genericclioptions.IOStreams) *
 		},
 	}
 	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodPortForwardWaitTimeout)
-	cmdutil.AddAddressFlag(cmd)
+	cmd.Flags().StringSliceVar(&opts.Address, "address", []string{"localhost"}, "Addresses to listen on (comma separated)")
 	// TODO support UID
 	return cmd
 }
@@ -236,8 +236,6 @@ func (o *PortForwardOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	if err != nil {
 		return err
 	}
-
-	o.Address = cmdutil.GetAddressFlag(cmd)
 
 	o.StopChannel = make(chan struct{}, 1)
 	o.ReadyChannel = make(chan struct{})
