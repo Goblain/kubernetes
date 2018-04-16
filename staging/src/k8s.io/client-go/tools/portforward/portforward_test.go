@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -62,13 +63,24 @@ func TestParsePortsAndNew(t *testing.T) {
 		{input: []string{"5000:5000"}, addresses: []string{"domain.invalid"}, expectPortParseError: false, expectAddressParseError: true, expectNewError: true},
 		{
 			input:     []string{"5000:5000"},
+			addresses: []string{"localhost"},
+			expectedPorts: []ForwardedPort{
+				{5000, 5000},
+			},
+			expectedAddresses: []listenAddress{
+				{protocol: "tcp4", address: "127.0.0.1", failureMode: "all"},
+				{protocol: "tcp6", address: "::1", failureMode: "all"},
+			},
+		},
+		{
+			input:     []string{"5000:5000"},
 			addresses: []string{"localhost", "127.0.0.1"},
 			expectedPorts: []ForwardedPort{
 				{5000, 5000},
 			},
 			expectedAddresses: []listenAddress{
-				{protocol: "tcp4", address: "127.0.0.1"},
-				{protocol: "tcp6", address: "::1"},
+				{protocol: "tcp4", address: "127.0.0.1", failureMode: "any"},
+				{protocol: "tcp6", address: "::1", failureMode: "all"},
 			},
 		},
 		{
@@ -83,8 +95,8 @@ func TestParsePortsAndNew(t *testing.T) {
 				{0, 5000},
 			},
 			expectedAddresses: []listenAddress{
-				{protocol: "tcp4", address: "127.0.0.1"},
-				{protocol: "tcp6", address: "::1"},
+				{protocol: "tcp4", address: "127.0.0.1", failureMode: "any"},
+				{protocol: "tcp6", address: "::1", failureMode: "any"},
 			},
 		},
 	}
@@ -127,10 +139,8 @@ func TestParsePortsAndNew(t *testing.T) {
 			continue
 		}
 
-		// wipe group pointers before matching against it
-		for k := range parsedAddresses {
-			parsedAddresses[k].group = nil
-		}
+		sort.Slice(test.expectedAddresses, func(i, j int) bool { return test.expectedAddresses[i].address < test.expectedAddresses[j].address })
+		sort.Slice(parsedAddresses, func(i, j int) bool { return parsedAddresses[i].address < parsedAddresses[j].address })
 
 		if !reflect.DeepEqual(test.expectedAddresses, parsedAddresses) {
 			t.Fatalf("%d: expectedAddresses: %v, got: %v", i, test.expectedAddresses, parsedAddresses)
